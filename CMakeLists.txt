@@ -36,6 +36,8 @@ enable_testing()
 add_executable(test_sage1 native/sage1/test_sage1.c)
 target_compile_options(test_sage1 PRIVATE ${SAGE1_WARNINGS})
 target_link_libraries(test_sage1 PRIVATE sage1)
+# Its checks are assert()s: keep them live in Release builds too.
+target_compile_options(test_sage1 PRIVATE -UNDEBUG)
 add_test(NAME c.original COMMAND test_sage1)
 
 add_executable(test_sage1_extended tests/c/test_sage1_extended.c)
