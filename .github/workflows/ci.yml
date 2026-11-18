@@ -103,7 +103,8 @@ jobs:
       - name: Build TinyAPL
         working-directory: ${{ runner.temp }}/tinyapl
         run: |
-          cabal update
+          # Hackage mirrors are picked at random; retry if one refuses.
+          for i in 1 2 3 4 5; do cabal update && break; sleep 15; done
           cabal build exe:tinyapl -j2
           mkdir -p "$RUNNER_TEMP/bin"
           cp "$(cabal list-bin exe:tinyapl)" "$RUNNER_TEMP/bin/tinyapl"
