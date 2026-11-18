@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_BUILD_TYPE=Debug -DSAGE1_SANITIZE=ON
+        run: cmake -S . -B build -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_BUILD_TYPE=Debug -DSAGE1_SANITIZE=ON -DSAGE1_BENCH=ON
       - name: Build
         run: cmake --build build
       - name: Test
@@ -54,6 +54,22 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  bench:
+    name: Perplexity benchmark (softmax vs SLERP vs variants A/B)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SWI-Prolog
+        run: sudo apt-get update && sudo apt-get install -y swi-prolog-nox
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSAGE1_BENCH=ON -DSAGE1_PROLOG=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test (variants, grammar port vs Prolog, benchmark)
+        run: ctest --test-dir build --output-on-failure -R "variants|bench"
+      - name: Benchmark table
+        run: cat build/benchmark.md | tee -a "$GITHUB_STEP_SUMMARY"
 
   futhark:
     name: Futhark array backend (c, multicore)

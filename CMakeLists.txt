@@ -7,6 +7,7 @@ option(SAGE1_SANITIZE "Build everything with AddressSanitizer + UBSan" OFF)
 option(SAGE1_PROLOG   "Build the SWI-Prolog foreign library and grammar tests" OFF)
 option(SAGE1_FUTHARK  "Build the Futhark array backend and its cross-check" OFF)
 option(SAGE1_TINYAPL  "Run the TinyAPL array engine and check it against C" OFF)
+option(SAGE1_BENCH    "Build and run the held-out perplexity benchmark" OFF)
 set(SAGE1_FUTHARK_BACKENDS "c;multicore" CACHE STRING
     "Futhark backends to build and cross-check against C")
 
@@ -83,4 +84,23 @@ if(SAGE1_TINYAPL)
                    ${TINYAPL_EXECUTABLE}
                    ${CMAKE_CURRENT_SOURCE_DIR}/apl/sage1_engine_checked.tinyapl
                    $<TARGET_FILE:test_tinyapl_vs_c> ${CMAKE_CURRENT_BINARY_DIR})
+endif()
+
+if(SAGE1_BENCH)
+  add_executable(sage1_bench bench/sage1_bench.c bench/sage1_bench_grammar.c)
+  target_include_directories(sage1_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/bench)
+  target_compile_options(sage1_bench PRIVATE ${SAGE1_WARNINGS})
+  target_link_libraries(sage1_bench PRIVATE sage1_variants)
+  # Fails on any mask violation; the table lands in the build tree.
+  add_test(NAME bench.perplexity
+           COMMAND sage1_bench --out ${CMAKE_CURRENT_BINARY_DIR}/benchmark.md)
+  if(SAGE1_PROLOG)
+    add_test(NAME bench.grammar_vs_prolog
+             COMMAND sh -c "\"$1\" --dump-masks 3 > masks.pl && \"$1\" --dump-corpus 2000 20261118 3 > corpus.pl && \"$2\" -q -g main -t halt \"$3\" -- masks.pl corpus.pl"
+                     sh $<TARGET_FILE:sage1_bench> ${SWIPL_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/bench/check_grammar.pl
+             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(bench.grammar_vs_prolog PROPERTIES
+      ENVIRONMENT "SAGE1_PL_LIB=$<TARGET_FILE:sage1_pl>")
+  endif()
 endif()
