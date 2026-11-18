@@ -41,6 +41,13 @@ moved.
 - **Futhark array backend** (`futhark/`): data-parallel propagation (segmented
   CSR scatter-reduce), sqrt + SLERP step, fused multi-step evolution, decoding
   and conditioning, built as a C library for the `c` and `multicore` backends.
+- **Step variants** (`native/sage1/variants`): a temperature-scaled
+  log-ratio step that replaces the SLERP angle, and a low-rank residual
+  projection between CSR propagation and the grammar mask, fitted
+  deterministically from training transitions.
+- **Perplexity benchmark** (`bench/`): masked Markov softmax, the SLERP step
+  and both variants scored on a held-out split under the same grammar mask,
+  with the C grammar port checked against the Prolog grammar.
 - **Array engine** (`apl/`): the TinyAPL engine with columnar CSR and Key
   scatter-reduce, a q/kdb+ Riemannian attention head with step Jacobians, and an
   RNS exact-norm greedy layer network, joined by a connector script.
@@ -56,7 +63,7 @@ ctest --test-dir build --output-on-failure
 Everything optional is a CMake switch:
 
 ```sh
-cmake -S . -B build -DSAGE1_PROLOG=ON -DSAGE1_FUTHARK=ON -DSAGE1_TINYAPL=ON
+cmake -S . -B build -DSAGE1_PROLOG=ON -DSAGE1_FUTHARK=ON -DSAGE1_TINYAPL=ON -DSAGE1_BENCH=ON
 ```
 
 Rust:
@@ -113,6 +120,40 @@ Status codes: `SAGE1_OK`, `SAGE1_BAD_INPUT`, `SAGE1_BAD_MATRIX`,
 `SAGE1_DEAD_END`, `SAGE1_NUMERIC`. Rows must be nonempty with positive counts,
 vectors must be finite and unit-norm in the nonnegative orthant, and inputs
 must not alias outputs.
+
+## Step variants
+
+```c
+#include "sage1_variants.h"
+
+/* A: q = Pᵀ(x ⊙ x); out = q^(1/(2τ)) / ‖q^(1/(2τ))‖ */
+sage1_status sage1_logratio_step(const sage1_csr *m, const double *x, double tau,
+                                 double *out, double *q);
+/* B: y = sqrt(Pᵀ(x ⊙ x)); z = y + U(Vᵀy); out = SLERP(x, |z|/‖z‖, λ) */
+sage1_status sage1_lowrank_step(const sage1_csr *m, const double *x, double lambda,
+                                const double *U, const double *V, size_t rank,
+                                double *out, double *y, double *z, double *w);
+sage1_status sage1_lowrank_fit(const double *S, const double *T, size_t n,
+                               size_t rank, double *U, double *V);
+```
+
+**A — temperature-scaled log-ratio step.** The fixed angle `λ` is replaced by
+a step that scales every log-ratio of the propagated target by `1/τ`:
+`log(out_i² / out_j²) = (1/τ)·log(q_i / q_j)`. Zero entries stay zero, the
+output is a nonnegative unit vector, and `τ = 1` is `sage1_step` at `λ = 1`.
+It is computed with a max shift in the log domain, so small `τ` does not
+overflow.
+
+**B — low-rank residual projection.** After CSR propagation the amplitude
+`y` gets a rank-`r` correction `U(Vᵀy)`, is folded back into the nonnegative
+orthant with `|·|` (probabilities `z_i²` are unchanged) and renormalized, and
+the SLERP step and grammar mask follow as before. `sage1_lowrank_fit` takes
+the propagated amplitude rows `S` (row `k` = `sqrt(P[k,:])`) and target rows
+`T`, solves `S X = T − S` by Gaussian elimination, and keeps the top-`r` left
+singular vectors `U_r` of `(T − S)ᵀ` (cyclic Jacobi, fixed sweep order, sign
+fixed so each vector's largest entry is positive): `U = U_r`, `V = X U_r`.
+That is the rank-`r` reduced-rank regression of the residual on `S`; rank
+`n` reproduces every target row exactly. `rank = 0` is `sage1_step`.
 
 ## Rust
 
@@ -241,16 +282,93 @@ call time, the connector rebinds `unitSphere` to the RNS projection only while
 attention runs (`.sra.with`) and restores the float projection for the SAGE-1
 step, whose unit-norm check is `1e-8`.
 
+## Benchmarks
+
+```sh
+cmake -S . -B build -DSAGE1_BENCH=ON && cmake --build build
+./build/sage1_bench            # --sentences N --seed S --max-depth D --out FILE
+```
+
+**Corpus.** 20,000 sentences sampled (splitmix64, seed 20261118) from a
+stochastic version of the Prolog grammar's language with stack depth ≤ 3:
+each nesting level stops or adds an atom or a `( … )` / `[ … ]` group, with
+probabilities that depend on the depth and the enclosing bracket. The first
+16,000 sentences (185,734 tokens) are training data and the last 4,000
+(45,237 tokens) are held out. `bench/check_grammar.pl` checks the C grammar
+port against `legal_mask/2` on all 105 parser states and parses 2,000
+generated sentences with `sentence//0`.
+
+**Protocol.** Every model gets the same add-one bigram counts from the
+training split as its CSR matrix. At each held-out position the state is
+`e_k` for the previous token `k` (as after `sage1_condition`), the model
+produces amplitudes, and the probability of token `j` is `x_j²` over the
+legal set — what `sage1_select` scores. The softmax baseline is
+`p_j ∝ exp(log P[k][j] / T)` over the legal set. Variant B's targets are the
+masked choice-model fit on the training split: for each `k`, the weights `w`
+that maximize `Σ log(w_next / Σ_legal w)` with one add-one pseudo-event per
+pair, found with 2,000 MM iterations; `T[k] = sqrt(w / Σw)`. Margin is the
+mean of top-1 minus top-2 probability over positions with at least two legal
+tokens; a mask violation is a position where `sage1_select` returns an
+illegal token or the held-out token is illegal.
+
+|---|---|---:|---:|---:|---:|
+| Generator (true distribution) | — | 3.0809 | — | — | — |
+| Masked Markov softmax | T = 0.50 | 3.8655 | 0.3557 | 39.16% | 0 |
+| Masked Markov softmax | T = 0.75 | 3.4739 | 0.2400 | 39.16% | 0 |
+| Masked Markov softmax | T = 1.00 | 3.3701 | 0.1763 | 39.16% | 0 |
+| Masked Markov softmax | T = 1.25 | 3.3399 | 0.1377 | 39.16% | 0 |
+| Masked Markov softmax | T = 1.50 | 3.3342 | 0.1124 | 39.16% | 0 |
+| Masked Markov softmax | T = 2.00 | 3.3440 | 0.0816 | 39.16% | 0 |
+| Masked Markov softmax | T = 2.50 | 3.3594 | 0.0638 | 39.16% | 0 |
+| SAGE-1 SLERP step | λ = 0.25 | 5.8970 | 0.4323 | 31.17% | 0 |
+| SAGE-1 SLERP step | λ = 0.30 | 5.3032 | 0.4099 | 31.17% | 0 |
+| SAGE-1 SLERP step | λ = 0.50 | 4.0278 | 0.2899 | 31.17% | 0 |
+| SAGE-1 SLERP step | λ = 0.90 | 3.3347 | 0.1466 | 42.12% | 0 |
+| SAGE-1 SLERP step | λ = 1.00 | 3.3701 | 0.1763 | 39.16% | 0 |
+| A: log-ratio step | τ = 0.50 | 3.8655 | 0.3557 | 39.16% | 0 |
+| A: log-ratio step | τ = 0.75 | 3.4739 | 0.2400 | 39.16% | 0 |
+| A: log-ratio step | τ = 1.00 | 3.3701 | 0.1763 | 39.16% | 0 |
+| A: log-ratio step | τ = 1.25 | 3.3399 | 0.1377 | 39.16% | 0 |
+| A: log-ratio step | τ = 1.50 | 3.3342 | 0.1124 | 39.16% | 0 |
+| A: log-ratio step | τ = 2.00 | 3.3440 | 0.0816 | 39.16% | 0 |
+| A: log-ratio step | τ = 2.50 | 3.3594 | 0.0638 | 39.16% | 0 |
+| B: low-rank residual | rank 0, λ = 1 | 3.3701 | 0.1763 | 39.16% | 0 |
+| B: low-rank residual | rank 1, λ = 1 | 3.3774 | 0.3317 | 46.73% | 0 |
+| B: low-rank residual | rank 2, λ = 1 | 3.4122 | 0.2471 | 46.65% | 0 |
+| B: low-rank residual | rank 3, λ = 1 | 3.2599 | 0.2455 | 45.45% | 0 |
+| B: low-rank residual | rank 4, λ = 1 | 3.1519 | 0.2085 | 47.76% | 0 |
+| B: low-rank residual | rank 5, λ = 1 | 3.1239 | 0.2010 | 48.06% | 0 |
+| B: low-rank residual | rank 6, λ = 1 | 3.1239 | 0.2007 | 48.06% | 0 |
+| B: low-rank residual | rank 7, λ = 1 | 3.1239 | 0.2007 | 48.06% | 0 |
+
+**Where the gap closes.** The best softmax temperature in the sweep is
+`T = 1.5` at 3.3342. The SLERP step is identical to softmax `T = 1` at
+`λ = 1` (3.3701) and comes within 0.0005 of the best softmax at `λ = 0.9`
+(3.3347); at `λ ≤ 0.5` the extra mass on the current token raises margin but
+costs perplexity (5.8970 at `λ = 0.25`). Variant A matches softmax at
+`T = τ` on every row: with a one-hot state it computes the same masked
+`q^(1/τ)` distribution, so it closes the gap completely and inherits the
+same perplexity/margin trade. Variant B is the only one that goes past
+softmax: rank 1 keeps perplexity near softmax `T = 1` (3.3774) with nearly
+the margin of `T = 0.5` (0.3317 vs 0.3557), rank 3 (3.2599) beats every
+softmax temperature, and ranks 5–7 reach 3.1239 with 48.06% top-1 accuracy,
+0.043 above the generator's own 3.0809. Its gain comes from fitting the
+residual to the masked likelihood, which plain bigram counts do not see.
+No method produced a mask violation.
+
 ## Layout
 
 ```
 native/sage1/      C11 kernel, original test and README (unmodified)
+native/sage1/variants/  step variants A (log-ratio) and B (low-rank residual)
 tests/c/           extended C tests, README sanitizer command
 rust/sage1/        Rust crate: build.rs, FFI, safe API, grammar decoder, tests
 prolog/            foreign library, Prolog binding, pushdown grammar, plunit tests
 futhark/           Futhark kernels and the C cross-check driver
 apl/               TinyAPL engine, q attention head, RNS network, connector
 tests/apl/         TinyAPL-vs-C check
+tests/variants/    variant A/B checks
+bench/             perplexity benchmark, grammar port, Prolog cross-check
 cmake/             SWI-Prolog discovery
 ```
 
@@ -260,6 +378,7 @@ cmake/             SWI-Prolog discovery
 |---|---|
 | C kernel and tests | C11 compiler, CMake ≥ 3.16; ASan/UBSan for `SAGE1_SANITIZE` |
 | Rust | Rust ≥ 1.70 and a C compiler |
+| Benchmark | C kernel requirements; SWI-Prolog for the grammar cross-check |
 | Prolog | SWI-Prolog with headers (`swipl --dump-runtime-variables` locates them) |
 | Futhark | `futhark` ≥ 0.25 (CI uses 0.29.1); pthreads for `multicore` |
 | TinyAPL | `tinyapl` 0.12 CLI built with GHC 9.10 |
