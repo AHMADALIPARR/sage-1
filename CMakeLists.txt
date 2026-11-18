@@ -6,6 +6,7 @@ project(sage1 VERSION 1.0.0 LANGUAGES C)
 option(SAGE1_SANITIZE "Build everything with AddressSanitizer + UBSan" OFF)
 option(SAGE1_PROLOG   "Build the SWI-Prolog foreign library and grammar tests" OFF)
 option(SAGE1_FUTHARK  "Build the Futhark array backend and its cross-check" OFF)
+option(SAGE1_TINYAPL  "Run the TinyAPL array engine and check it against C" OFF)
 set(SAGE1_FUTHARK_BACKENDS "c;multicore" CACHE STRING
     "Futhark backends to build and cross-check (c, multicore, opencl, cuda)")
 
@@ -58,4 +59,16 @@ endif()
 
 if(SAGE1_FUTHARK)
   add_subdirectory(futhark)
+endif()
+
+if(SAGE1_TINYAPL)
+  find_program(TINYAPL_EXECUTABLE tinyapl REQUIRED)
+  add_executable(test_tinyapl_vs_c tests/apl/test_tinyapl_vs_c.c)
+  target_compile_options(test_tinyapl_vs_c PRIVATE ${SAGE1_WARNINGS})
+  target_link_libraries(test_tinyapl_vs_c PRIVATE sage1)
+  add_test(NAME apl.tinyapl_engine
+           COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/apl/run_tinyapl.sh
+                   ${TINYAPL_EXECUTABLE}
+                   ${CMAKE_CURRENT_SOURCE_DIR}/apl/sage1_engine_checked.tinyapl
+                   $<TARGET_FILE:test_tinyapl_vs_c> ${CMAKE_CURRENT_BINARY_DIR})
 endif()

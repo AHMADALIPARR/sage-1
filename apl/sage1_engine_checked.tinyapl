@@ -1,0 +1,96 @@
+⍝ SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-SnapKitty-Opaque-1.0
+⍝ Copyright (C) 2026 Ahmad Ali Parr / SnapKitty Research Lab
+⍝ ============================================================================
+⍝ Checked copy of sage1_engine.tinyapl (TinyAPL part), runnable on TinyAPL 0.12.
+⍝ Changes from the original, all syntax or semantics of this TinyAPL version:
+⍝  - statements are separated with ⋄ (a single newline is whitespace here;
+⍝    only a blank line ends a statement), vectors are stranded with ‿ or ⟨⟩;
+⍝  - λ θ renamed lam th (not valid names); pairs built with ⍮ instead of ⊂;
+⍝  - ⎕math→Arccos returns a complex number, so its real part ℜ is taken;
+⍝  - SLERP sum parenthesised: a×u+b×v parsed as a×(u+b×v) right-to-left;
+⍝  - SparsePtMul used an undefined p; it now reads (⊂row)⌷⍵, and the Key result is
+⍝    scattered back by target index (no indexed assignment in TinyAPL);
+⍝  - TinyAPL's ⎕io is 0, so the 1-based CSR/peak fixtures are shifted by 1;
+⍝  - ⎕Assert does not exist: Assert prints to stderr and raises a domain error;
+⍝  - StateCondition scales the peaks without indexed assignment;
+⍝  - FlatPack/QMakeCSR return plain ⟨…⟩ records; LoadWolframPipe is omitted
+⍝    (no ⎕JSON / ⎕file→Read in TinyAPL 0.12).
+⍝ The Wolfram Language package in the original is not part of this file.
+⍝ ============================================================================
+
+Norm2      ← {(+/⍵*2)*0.5}
+
+UnitSphere ← {⍵ ÷ Norm2 ⍵}
+
+ProbDecode ← {⍵×⍵}
+
+Dot        ← {+/⍺×⍵}
+
+Assert     ← {⍵ : ■ 1 ⋄ ⎕E "SAGE-1 assertion failed" ⋄ 'a' + 1}
+
+⍝ ⍺ = u ⍮ v, ⍵ = lam
+Slerp ← {u ← UnitSphere ⊃⍺ ⋄ v ← UnitSphere ⊇⍺ ⋄ lam ← ⍵ ⋄
+  d ← ¯1 ⌈ 1 ⌊ u Dot v ⋄
+  th ← ℜ ⎕math→Arccos d ⋄
+  th < 1⏨¯7 : ■ UnitSphere ((1-lam)×u) + lam×v ⋄
+  s ← ⎕math→Sin th ⋄
+  (((⎕math→Sin (1-lam)×th) ÷ s)×u) + ((⎕math→Sin lam×th) ÷ s)×v}
+
+FlatPack   ← {(⍴⍵) ⍮ ,⍵}
+
+FlatUnpack ← {(⊃⍵) ⍴ ⊇⍵}
+
+⍝ ⍺ = nStates, ⍵ = ⟨row ⋄ col ⋄ w⟩ (1-based) → ⟨n ⋄ row ⋄ col ⋄ w⟩
+QMakeCSR ← {⟨⍺ ⋄ ⊃⍵ ⋄ ⊃1↓⍵ ⋄ ⊇⍵⟩}
+
+⍝ ⍺ = ⟨n ⋄ row ⋄ col ⋄ w⟩ (1-based), ⍵ = probability vector p → P^T p
+SparsePtMul ← {n ← ⊃⍺ ⋄ row ← (⊃1↓⍺) - 1 ⋄ col ← (⊃2↓⍺) - 1 ⋄ w ← ⊇⍺ ⋄
+  contrib ← ((⊂row) ⌷ ⍵) × w ⋄
+  val ← col {+/⍵}⌸ contrib ⋄
+  idx ← ∪ col ⋄
+  {+/ val × idx = ⍵}¨ ⍳ n}
+
+⍝ ⍺ = csr ⍮ lam, ⍵ = x_t
+SAGE1Step ← {csr ← ⊃⍺ ⋄ lam ← ⊇⍺ ⋄
+  xt  ← UnitSphere ⍵ ⋄
+  p   ← ProbDecode xt ⋄
+  ptp ← csr SparsePtMul p ⋄
+  tgt ← UnitSphere (0 ⌈ ptp)*0.5 ⋄
+  xn  ← (xt ⍮ tgt) Slerp lam ⋄
+  ok  ← Assert 1⏨¯8 > | 1 - Norm2 xn ⋄
+  xn}
+
+DetSelect ← {⊃⍒ ProbDecode ⍵}
+
+⍝ ⍺ = peaks (1-based) ⍮ boost, ⍵ = x_t
+StateCondition ← {pks ← (⊃⍺) - 1 ⋄ boost ← ⊇⍺ ⋄
+  UnitSphere ⍵ × 1 + (boost - 1) × (⍳ ≢⍵) ∊ pks}
+
+⍝ 5-vertex triangulated patch, as in the original self-test
+n   ← 5
+
+row ← 1‿1‿2‿2‿2‿3‿3‿4‿4‿5‿5
+
+col ← 1‿2‿1‿2‿3‿2‿4‿3‿5‿4‿5
+
+w   ← 0.5‿0.5‿0.3‿0.4‿0.3‿0.5‿0.5‿0.5‿0.5‿0.5‿0.5
+
+csr ← n QMakeCSR ⟨row ⋄ col ⋄ w⟩
+
+pks ← 1‿3‿5
+
+x0  ← UnitSphere n ⍴ 1
+
+x1  ← (csr ⍮ 0.35) SAGE1Step x0
+
+x2  ← (csr ⍮ 0.35) SAGE1Step (pks ⍮ 1.25) StateCondition x1
+
+⎕ ← x1
+
+⎕ ← x2
+
+⎕ ← Norm2 x1
+
+⎕ ← Norm2 x2
+
+⎕ ← DetSelect x2
