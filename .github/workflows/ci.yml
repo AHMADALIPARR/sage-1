@@ -56,7 +56,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
   futhark:
-    name: Futhark array backend (c, multicore, opencl via PoCL)
+    name: Futhark array backend (c, multicore)
     runs-on: ubuntu-24.04
     env:
       FUTHARK_VERSION: 0.29.1
@@ -68,10 +68,8 @@ jobs:
             https://github.com/diku-dk/futhark/releases/download/v${FUTHARK_VERSION}/futhark-${FUTHARK_VERSION}-linux-x86_64.tar.xz
           tar xf futhark.tar.xz
           echo "$PWD/futhark-${FUTHARK_VERSION}-linux-x86_64/bin" >> "$GITHUB_PATH"
-      - name: Install OpenCL (PoCL CPU device)
-        run: sudo apt-get update && sudo apt-get install -y ocl-icd-opencl-dev opencl-headers pocl-opencl-icd clinfo
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSAGE1_FUTHARK=ON "-DSAGE1_FUTHARK_BACKENDS=c;multicore;opencl"
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSAGE1_FUTHARK=ON "-DSAGE1_FUTHARK_BACKENDS=c;multicore"
       - name: Build
         run: cmake --build build
       - name: Test

@@ -8,7 +8,7 @@ option(SAGE1_PROLOG   "Build the SWI-Prolog foreign library and grammar tests" O
 option(SAGE1_FUTHARK  "Build the Futhark array backend and its cross-check" OFF)
 option(SAGE1_TINYAPL  "Run the TinyAPL array engine and check it against C" OFF)
 set(SAGE1_FUTHARK_BACKENDS "c;multicore" CACHE STRING
-    "Futhark backends to build and cross-check (c, multicore, opencl, cuda)")
+    "Futhark backends to build and cross-check against C")
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
