@@ -76,3 +76,43 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure -R futhark
+
+  tinyapl:
+    name: TinyAPL array engine vs C
+    runs-on: ubuntu-24.04
+    env:
+      TINYAPL_COMMIT: db713c5a47ebf4d299055de0a598edd953df7e71
+    steps:
+      - uses: actions/checkout@v4
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: '9.10.1'
+          cabal-version: '3.12.1.0'
+      - name: Fetch TinyAPL
+        run: |
+          git clone https://github.com/RubenVerg/tinyapl.git "$RUNNER_TEMP/tinyapl"
+          git -C "$RUNNER_TEMP/tinyapl" checkout "$TINYAPL_COMMIT"
+          # CLI-only build: drop the `edited` line editor (REPL key bindings only).
+          sed -i '3s/.*/#if 0/' "$RUNNER_TEMP/tinyapl/app/TinyAPL/CLI.hs"
+          sed -i 's/^        build-depends:edited$/        build-depends:/' "$RUNNER_TEMP/tinyapl/tinyapl.cabal"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/packages
+            ~/.cabal/store
+            ${{ runner.temp }}/tinyapl/dist-newstyle
+          key: tinyapl-${{ env.TINYAPL_COMMIT }}-ghc-9.10.1
+      - name: Build TinyAPL
+        working-directory: ${{ runner.temp }}/tinyapl
+        run: |
+          cabal update
+          cabal build exe:tinyapl -j2
+          mkdir -p "$RUNNER_TEMP/bin"
+          cp "$(cabal list-bin exe:tinyapl)" "$RUNNER_TEMP/bin/tinyapl"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSAGE1_TINYAPL=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -R apl
