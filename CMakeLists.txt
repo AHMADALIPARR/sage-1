@@ -46,6 +46,18 @@ target_compile_options(test_sage1_extended PRIVATE ${SAGE1_WARNINGS})
 target_link_libraries(test_sage1_extended PRIVATE sage1)
 add_test(NAME c.extended COMMAND test_sage1_extended)
 
+# ---- Variants A (log-ratio step) and B (low-rank residual) ----
+add_library(sage1_variants STATIC native/sage1/variants/sage1_variants.c)
+target_include_directories(sage1_variants PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/native/sage1/variants)
+target_compile_options(sage1_variants PRIVATE ${SAGE1_WARNINGS})
+target_link_libraries(sage1_variants PUBLIC sage1)
+
+add_executable(test_variants tests/variants/test_variants.c)
+target_compile_options(test_variants PRIVATE ${SAGE1_WARNINGS})
+target_link_libraries(test_variants PRIVATE sage1_variants)
+add_test(NAME c.variants COMMAND test_variants)
+
 # Exact build command from native/sage1/README.md, run from the repo root.
 add_test(NAME c.readme_sanitizer
          COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/c/readme_sanitizer.sh
