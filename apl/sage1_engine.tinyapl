@@ -1,0 +1,331 @@
+ ============================================================================
+⍝ SAGE-1 Zero-Dependency Array Engine (TinyAPL)
+⍝ Intertwined J-style tacit/rank, q-style columnar/keyed, & Wolfram Flat arrays
+⍝ Core invariant: x_{t+1} = SLERP(x_t, Sqrt(P^T (x_t ⊙ x_t)), λ), ||x||_2 = 1
+⍝ Note: TinyAPL uses 1-based indexing (⎕io = 1)
+⍝ ============================================================================
+
+⍝ --- 1. J-Style Tacit & Rank Combinators (Unit-Sphere & Probability Kernels) ---
+Norm2      ← {(+/⍵*2)*0.5}
+UnitSphere ← {⍵ ÷ Norm2 ⍵}
+ProbDecode ← {⍵×⍵}
+Dot        ← +/∙×
+
+⍝ Spherical Linear Interpolation on S^(n-1) with small-angle fallback
+Slerp ← {
+  u ← UnitSphere ⊃⍺
+  v ← UnitSphere ⊇⍺
+  λ ← ⍵
+  d ← ¯1 ⌈ 1 ⌊ u Dot v
+  θ ← ⎕math→Arccos d
+  θ < 1⏨¯7 : UnitSphere ((1-λ)×u) + λ×v
+  s ← ⎕math→Sin θ
+  ((⎕math→Sin (1-λ)×θ) ÷ s)×u + ((⎕math→Sin λ×θ) ÷ s)×v
+}
+
+⍝ --- 2. Wolfram Flat Stream Packing / Unpacking ---
+⍝ Packs (shape ; flat_ravel) as an associative flat record
+FlatPack   ← {(⍴⍵) ߹ (,⍵)}
+FlatUnpack ← {(⊃⍵) ⍴ (⊇⍵)}
+
+⍝ --- 3. q-Style Columnar / Inverted Table CSR Representation ---
+⍝ Stores sparse transition matrix P as flat columnar vectors:
+⍝   row : 1-based source state indices
+⍝   col : 1-based target state indices
+⍝   w   : count-normalized transition weights
+QMakeCSR ← {
+  ⍝ ⍺ = nStates, ⍵ = (row ; col ; w)
+  n ← ⍺
+  r ← ⊃⍵
+  c ← ⊃1↓⍵
+  w ← ⊇⍵
+  ⍉ ('n' ߹ n) ⍪ ('row' ߹ r) ⍪ ('col' ߹ c) ⍪ ('w' ߹ w)
+}
+
+⍝ --- 4. Zero-Dependency Sparse P^T * p (No Dense Matrix Materialization) ---
+⍝ Computes y = P^T (x ⊙ x) directly from flat columnar CSR arrays
+⍝ Uses J-style Key (⌸) scatter-reduce over target column indices
+SparsePtMul ← {
+  ⍝ ⍺ = (n ; row ; col ; w), ⍵ = probability vector p (length n)
+  n   ← ⊃⍺
+  row ← ⊃1↓⍺
+  col ← ⊃2↓⍺
+  w   ← ⊇⍺
+  contrib ← (p ⌷⍨ row) × w      ⍝ edge probability flow p_i * P_{ij}
+  acc ← n ⍴ 0
+  ⍝ Group contributions by target column j and sum
+  grp ← {(+/⍵)} ⌸ (col ߹ contrib)
+  idx ← ⊃grp
+  val ← ⊇grp
+  acc[idx] +← val
+  acc
+}
+
+⍝ --- 5. Core SAGE-1 Geodesic Evolution Step ---
+SAGE1Step ← {
+  ⍝ ⍺ = (csrFlat ; λ), ⍵ = current unit-sphere state x_t
+  csr ← ⊃⍺
+  λ   ← ⊇⍺
+  xt  ← UnitSphere ⍵
+  p   ← ProbDecode xt
+  ptp ← csr SparsePtMul p
+  tgt ← UnitSphere (0 ⌈ ptp)*0.5
+  xn  ← (xt ⊂ tgt) Slerp λ
+  ⎕Assert 1⏨¯8 > | 1 - Norm2 xn   ⍝ Verify unit-sphere invariant ||x_{t+1}||_2 = 1
+  xn
+}
+
+⍝ --- 6. Deterministic Transition Selection & Peak State Conditioning ---
+DetSelect ← {⊃⍒ ProbDecode ⍵}     ⍝ Argmax over spherical probability p_t = x_t ⊙ x_t
+
+StateCondition ← {
+  ⍝ ⍺ = (peaks ; boost), ⍵ = state x_t
+  pks   ← ⊃⍺
+  boost ← ⊇⍺
+  x     ← ⍵
+  x[pks] ×← boost
+  UnitSphere x
+}
+
+⍝ --- 7. Wolfram Flat JSON Pipe Ingestion ---
+LoadWolframPipe ← {
+  ⍝ ⍵ = path to JSON exported by sage1_geometry_pipe.wl
+  raw ← ⎕JSON ⎕file→Read ⍵
+  n   ← raw ⌷ 'nStates'
+  row ← raw ⌷ 'rowIdx'
+  col ← raw ⌷ 'colIdx'
+  w   ← raw ⌷ 'weights'
+  pks ← raw ⌷ 'peaks'
+  x0  ← UnitSphere (raw ⌷ 'initState')
+  (n ; row ; col ; w) ߹ pks ߹ x0
+}
+
+⍝ --- 8. Self-Contained Verification Harness (5-Vertex Triangulated Patch) ---
+RunSelfTest ← {
+  n   ← 5
+  row ← 1 1 2 2 2 3 3 4 4 5 5
+  col ← 1 2 1 2 3 2 4 3 5 4 5
+  w   ← 0.5 0.5 0.3 0.4 0.3 0.5 0.5 0.5 0.5 0.5 0.5
+  csr ← (n ; row ; col ; w)
+  pks ← 1 3 5
+  x0  ← UnitSphere n ⍴ 1
+  x1  ← (csr ; 0.35) SAGE1Step x0
+  x2  ← (csr ; 0.35) SAGE1Step (pks ; 1.25) StateCondition x1
+  ('norm_x1' ߹ Norm2 x1) ⍪ ('norm_x2' ߹ Norm2 x2) ⍪ ('peak_state' ߹ DetSelect x2)
+}
+
+(* ::Package:: *)
+(* SAGE-1 Geometry Triangulation, Peak Extraction & Flat Array Pipe *)
+(* Wolfram Language / Mathematica Library (Zero External Dependencies) *)
+
+BeginPackage["SAGE1GeometryPipe`"];
+
+TriangulateGeometry::usage =
+  "TriangulateGeometry[pts] computes a Delaunay triangulation of pts and returns an Association with mesh, vertices, simplices, measures, and adjacency.";
+
+ExtractGeometryPeaks::usage =
+  "ExtractGeometryPeaks[geom, field] detects local geometric/scalar peaks over the triangulated mesh using FindPeaks and 1-ring neighborhood maxima.";
+
+CountNormalizedTransition::usage =
+  "CountNormalizedTransition[geom, peaks, peakBias] builds a count-normalized row-stochastic transition matrix P and packs it into a Wolfram Flat CSR representation.";
+
+FlatArrayPipe::usage =
+  "FlatArrayPipe[args...] is a Flat-attributed associative container for zero-copy ravel-order array streams.";
+
+SphereNormalize::usage =
+  "SphereNormalize[x] projects vector x onto the unit sphere S^(n-1).";
+
+SLERP::usage =
+  "SLERP[u, v, lambda] computes geodesic spherical linear interpolation on S^(n-1).";
+
+SAGE1Step::usage =
+  "SAGE1Step[P, x, lambda] executes x_{t+1} = SLERP(x_t, Sqrt[Transpose[P] . (x_t * x_t)], lambda) and verifies the unit-sphere norm invariant.";
+
+ExportFlatPipeJSON::usage =
+  "ExportFlatPipeJSON[path, pipe] exports the Flat CSR transition and peak arrays to JSON for TinyAPL ingestion.";
+
+ExportFlatPipeCSV::usage =
+  "ExportFlatPipeCSV[dir, pipe] exports flat ravel-order CSV tables (csr.csv, peaks.csv, init_state.csv) for TinyAPL.";
+
+Begin["`Private`"];
+
+(* Wolfram Flat associative container for flat array streams *)
+SetAttributes[FlatArrayPipe, {Flat, OneIdentity}];
+
+SphereNormalize[x_List] := Module[{nrm = Norm[N[x]]},
+  If[nrm == 0., x, N[x] / nrm]
+];
+
+SLERP[u_List, v_List, lambda_?NumericQ] := Module[
+  {un = SphereNormalize[u], vn = SphereNormalize[v], dot, theta, sinTheta},
+  dot = Clip[un . vn, {-1., 1.}];
+  theta = ArcCos[dot];
+  If[theta < 1.*^-7,
+    SphereNormalize[(1. - lambda) un + lambda vn],
+    sinTheta = Sin[theta];
+    (Sin[(1. - lambda) theta] / sinTheta) un + (Sin[lambda theta] / sinTheta) vn
+  ]
+];
+
+SAGE1Step[P_?MatrixQ, x_List, lambda_?NumericQ] := Module[
+  {xt = SphereNormalize[x], p, targetProb, targetVec, xNext},
+  p = xt * xt;
+  targetProb = Transpose[N[P]] . p;
+  targetVec = SphereNormalize[Sqrt[Clip[targetProb, {0., Infinity}]]];
+  xNext = SLERP[xt, targetVec, lambda];
+  If[Abs[Norm[xNext] - 1.] > 1.*^-9,
+    Throw["Unit-sphere invariant violated: ||x_{t+1}|| != 1"]
+  ];
+  xNext
+];
+
+TriangulateGeometry[pts_List] := Module[
+  {mesh, coords, dim, cells, measures, adj, nVerts, edgeWeights},
+  mesh = DelaunayMesh[N[pts]];
+  coords = MeshCoordinates[mesh];
+  nVerts = Length[coords];
+  dim = RegionDimension[mesh];
+  cells = MeshCells[mesh, dim];
+  measures = PropertyValue[{mesh, dim}, MeshCellMeasure];
+  adj = AdjacencyMatrix[mesh];
+
+  (* Inverse-distance weighted geometric conductance over 1-ring triangulation edges *)
+  edgeWeights = SparseArray[
+    Map[
+      Function[{rule},
+        Module[{i, j, d},
+          {i, j} = rule[[1]];
+          d = EuclideanDistance[coords[[i]], coords[[j]]];
+          {i, j} -> If[d > 0., 1. / d, 1.]
+        ]
+      ],
+      Most[ArrayRules[adj]]
+    ],
+    {nVerts, nVerts}
+  ];
+
+  <|
+    "mesh" -> mesh,
+    "nVertices" -> nVerts,
+    "dimension" -> dim,
+    "coordinates" -> coords,
+    "simplices" -> (First /@ cells),
+    "measures" -> measures,
+    "adjacency" -> adj,
+    "conductance" -> edgeWeights
+  |>
+];
+
+ExtractGeometryPeaks[geom_Association, field_List : Automatic] := Module[
+  {n = geom["nVertices"], adj = geom["adjacency"], coords = geom["coordinates"],
+   vals, spectralPeaks, localMaxIdx, neighborLists, allPeaks},
+  vals = If[field === Automatic,
+    (* Default geometric scalar field: radial distance from centroid *)
+    With[{centroid = Mean[coords]}, Norm[# - centroid] & /@ coords],
+    N[field]
+  ];
+
+  (* 1D signal peak detection along vertex order *)
+  spectralPeaks = First /@ FindPeaks[vals];
+
+  (* Topological 1-ring local maxima on the triangulated mesh *)
+  neighborLists = adj["AdjacencyLists"];
+  localMaxIdx = Select[
+    Range[n],
+    Function[i,
+      With[{nbrs = neighborLists[[i]]},
+        Length[nbrs] == 0 || vals[[i]] >= Max[vals[[nbrs]]]
+      ]
+    ]
+  ];
+
+  allPeaks = Union[spectralPeaks, localMaxIdx];
+  <|
+    "field" -> vals,
+    "peakIndices" -> allPeaks,
+    "peakValues" -> vals[[allPeaks]],
+    "peakMask" -> ReplacePart[ConstantArray[0, n], Thread[allPeaks -> 1]]
+  |>
+];
+
+CountNormalizedTransition[geom_Association, peakInfo_Association, peakBias_?NumericQ : 1.5] := Module[
+  {n = geom["nVertices"], W = Normal[geom["conductance"]],
+   mask = peakInfo["peakMask"], biasedW, rowSums, P,
+   rules, sortedRules, rowPtr, colIdx, weights, counts, r, c, ptr},
+
+  (* Self-loop + peak conditioning + count-normalized row-stochastic transition P *)
+  biasedW = Table[
+    With[{base = W[[i, j]] + If[i == j, 1., 0.]},
+      If[base > 0., base * If[mask[[j]] == 1, peakBias, 1.], 0.]
+    ],
+    {i, n}, {j, n}
+  ];
+
+  rowSums = Total /@ biasedW;
+  P = MapThread[If[#2 > 0., #1 / #2, UnitVector[n, 1]] &, {biasedW, rowSums}];
+
+  (* Pack into 1-indexed flat CSR arrays (matching TinyAPL Qio = 1) *)
+  rules = Most[ArrayRules[SparseArray[P]]];
+  sortedRules = SortBy[rules, First];
+  colIdx = sortedRules[[All, 1, 2]];
+  weights = N[sortedRules[[All, 2]]];
+
+  counts = Counts[sortedRules[[All, 1, 1]]];
+  rowPtr = Prepend[Accumulate[Table[Lookup[counts, i, 0], {i, n}]], 0] + 1;
+
+  <|
+    "nStates" -> n,
+    "nnz" -> Length[weights],
+    "rowPtr" -> rowPtr,
+    "colIdx" -> colIdx,
+    "weights" -> weights,
+    "rowIdx" -> sortedRules[[All, 1, 1]],
+    "peaks" -> peakInfo["peakIndices"],
+    "peakWeights" -> peakInfo["peakValues"],
+    "flatStream" -> FlatArrayPipe[
+      NumericArray[rowPtr, "Integer64"],
+      NumericArray[colIdx, "Integer64"],
+      NumericArray[weights, "Real64"],
+      NumericArray[peakInfo["peakIndices"], "Integer64"]
+    ],
+    "denseP" -> P
+  |>
+];
+
+ExportFlatPipeJSON[path_String, pipe_Association] := Module[{payload},
+  payload = <|
+    "nStates" -> pipe["nStates"],
+    "nnz" -> pipe["nnz"],
+    "rowPtr" -> pipe["rowPtr"],
+    "rowIdx" -> pipe["rowIdx"],
+    "colIdx" -> pipe["colIdx"],
+    "weights" -> pipe["weights"],
+    "peaks" -> pipe["peaks"],
+    "peakWeights" -> pipe["peakWeights"],
+    "initState" -> SphereNormalize[ConstantArray[1., pipe["nStates"]]]
+  |>;
+  Export[path, payload, "JSON"]
+];
+
+ExportFlatPipeCSV[dir_String, pipe_Association] := Module[{csrTable, peakTable, stateTable},
+  If[!DirectoryQ[dir], CreateDirectory[dir]];
+  csrTable = Prepend[
+    Transpose[{pipe["rowIdx"], pipe["colIdx"], pipe["weights"]}],
+    {"row", "col", "weight"}
+  ];
+  peakTable = Prepend[
+    Transpose[{pipe["peaks"], pipe["peakWeights"]}],
+    {"peak_idx", "peak_val"}
+  ];
+  stateTable = Prepend[
+    List /@ SphereNormalize[ConstantArray[1., pipe["nStates"]]],
+    {"x0"}
+  ];
+  Export[FileNameJoin[{dir, "sage1_csr.csv"}], csrTable, "CSV"];
+  Export[FileNameJoin[{dir, "sage1_peaks.csv"}], peakTable, "CSV"];
+  Export[FileNameJoin[{dir, "sage1_init.csv"}], stateTable, "CSV"];
+  dir
+];
+
+End[];
+EndPackage[];
