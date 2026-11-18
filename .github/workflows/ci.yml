@@ -27,3 +27,52 @@ jobs:
         run: |
           cc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined -fno-omit-frame-pointer native/sage1/sage1.c native/sage1/test_sage1.c -lm -o /tmp/uor-sage1-test
           /tmp/uor-sage1-test
+
+  rust:
+    name: Rust runtime (cargo test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test
+        working-directory: rust/sage1
+        run: cargo test --all-targets
+      - name: cargo test (release)
+        working-directory: rust/sage1
+        run: cargo test --release
+
+  prolog:
+    name: Prolog grammar (SWI-Prolog foreign library)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SWI-Prolog
+        run: sudo apt-get update && sudo apt-get install -y swi-prolog-nox
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSAGE1_PROLOG=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  futhark:
+    name: Futhark array backend (c, multicore, opencl via PoCL)
+    runs-on: ubuntu-24.04
+    env:
+      FUTHARK_VERSION: 0.29.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Futhark
+        run: |
+          curl -fsSL -o futhark.tar.xz \
+            https://github.com/diku-dk/futhark/releases/download/v${FUTHARK_VERSION}/futhark-${FUTHARK_VERSION}-linux-x86_64.tar.xz
+          tar xf futhark.tar.xz
+          echo "$PWD/futhark-${FUTHARK_VERSION}-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - name: Install OpenCL (PoCL CPU device)
+        run: sudo apt-get update && sudo apt-get install -y ocl-icd-opencl-dev opencl-headers pocl-opencl-icd clinfo
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSAGE1_FUTHARK=ON "-DSAGE1_FUTHARK_BACKENDS=c;multicore;opencl"
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -R futhark
